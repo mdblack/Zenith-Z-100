@@ -41,7 +41,7 @@ typedef struct
 
 	unsigned int opcode, value, operand1, operand2, immediate, cycles;
 	int op_result;
-	char* name_opcode;
+	const char* name_opcode;
 
 	unsigned char* memory;
 

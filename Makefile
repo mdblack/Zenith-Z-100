@@ -1,5 +1,5 @@
 z100 : mainboard.o 8085.o 8088.o e8259.o e8253.o jwd1797.o keyboard.o video.o screen.o debug.o
-	gcc -pthread -o z100 mainboard.o 8085.o 8088.o e8259.o e8253.o jwd1797.o keyboard.o video.o screen.o debug.o `pkg-config --cflags --libs gtk+-3.0` -export-dynamic
+	gcc -pthread -o z100 mainboard.o 8085.o 8088.o e8259.o e8253.o jwd1797.o keyboard.o video.o screen.o debug.o `pkg-config --cflags --libs gtk+-3.0` -export-dynamic 
 mainboard.o : mainboard.c mainboard.h 8085.h 8088.h e8259.h e8253.h jwd1797.h keyboard.h video.h screen.h
 	gcc -c mainboard.c `pkg-config --cflags --libs gtk+-3.0` -export-dynamic
 8085.o : 8085.c 8085.h mainboard.h

@@ -28,7 +28,7 @@ typedef struct
 	int halted;
 
 	int opcode, value, immediate, cycles;
-	char* name;
+	const char* name;
 
 	// signal for external device data read request (used for FD-1797 Floppy Disk controller
 	int ready_;

@@ -42,11 +42,11 @@ void keyboardReset(Keyboard*);
 
 Keyboard* newKeyboard();
 
-void click();
-void beep();
+void doclick();
+void dobeep();
 
 
 //from UI
-void keyaction(Keyboard*,char code);
+void keyaction(Keyboard*,int code);
 void keydown(char* name);
 void keyup(char* name);

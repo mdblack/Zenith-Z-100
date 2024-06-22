@@ -123,7 +123,7 @@ void doInstruction8085(P8085* p8085)
 	unsigned int cyc=0;
 	unsigned int m=0,t=0;
 	unsigned int value,value2,result;
-	char* name;
+	const char* name;
 
 	unsigned int opcode=fetch(p8085);
 	// stuff opcode into instance variable "opcode" contained in the 8085 header file

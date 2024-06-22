@@ -19,6 +19,7 @@
  * Public License for more details.                                          *
  *****************************************************************************/
 
+typedef struct Z_100 Z100;
 typedef struct {
 
 unsigned char dataShiftRegister;
@@ -176,6 +177,7 @@ int start_track_read_;
 int wait_enabled;
 
 e8259_t* pic;
+Z100* z100;
 
 } JWD1797;
 

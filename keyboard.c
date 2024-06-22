@@ -15,10 +15,27 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <pthread.h>
 
-#include "keyboard.h"
+#include "mainboard.h"
 
 void scheduleTrap(int,int);
+pthread_mutex_t fifo_mutex;
+
+void doclick()
+{
+	printf("key click\n");
+	beep(10);
+}
+
+void dobeep()
+{
+	printf("beep\n");
+	beep(200);
+	// ring system bell with "BELL" character
+	// printf("\a");
+}
+
 
 void keyboardCommandWrite(Keyboard* k, unsigned int command)
 {
@@ -43,10 +60,10 @@ void keyboardCommandWrite(Keyboard* k, unsigned int command)
 			k->fifoHead=k->fifoTail=0;
 			break;
 		case 0x06:
-			click();
+			doclick();
 			break;
 		case 0x07:
-			beep();
+			dobeep();
 			break;
 		case 0x08:
 			k->keyboardEnabled=1;
@@ -81,6 +98,8 @@ unsigned int keyboardStatusRead(Keyboard* k)
 unsigned int keyboardDataRead(Keyboard* k)
 {
 	unsigned int rval=0;
+	pthread_mutex_lock(&fifo_mutex);
+
 	if(k->fifoHead==k->fifoTail)
 	{
 		rval = k->dataReg;
@@ -91,10 +110,12 @@ unsigned int keyboardDataRead(Keyboard* k)
 		rval=k->dataReg=k->fifo[k->fifoHead];
 		k->fifoHead=(k->fifoHead+1)%17;
 	}
+	pthread_mutex_unlock(&fifo_mutex);
+
 	return rval;
 }
 
-void keyaction(Keyboard* k, char code)
+void keyaction(Keyboard* k, int code)
 {
 	code=code&0xff;
 	printf("Incoming code from GdkEventKey to kb device buffer: %x\n", code);
@@ -110,13 +131,34 @@ void keyaction(Keyboard* k, char code)
 		code&=0x1f;
 		k->controlPressed=0;
 	}
+// handle UP key press
+if(code == 0xa5){
+//substitute ctrl-k
+code=(char)0xb;
+}
+// handle DOWN key press
+if(code == 0xa6){
+//substitute ctrl-j
+code=(char)0xa;
+}
+// handle RIGHT key press
+if(code == 0xa7){
+//substitute ctrl-l
+code=(char)0xc;
+}
+// handle LEFT key press
+if(code == 0xa8){
+//substitute ctrl-h
+code=(char)0x8;
+}
 
+	pthread_mutex_lock(&fifo_mutex);
 	k->fifo[k->fifoTail]=code;
 	k->fifoTail=(k->fifoTail+1)%17;
 
 	k->requestInterrupt=1;
 	printf("key interrupt requested\n");
-//	scheduleTrap(c,6+64,0);
+	pthread_mutex_unlock(&fifo_mutex);
 }
 
 Keyboard* newKeyboard()
@@ -139,21 +181,6 @@ void keyboardReset(Keyboard* k)
 	k->ASCIImode=1;
 	k->requestInterrupt=0;
 }
-
-void click()
-{
-	printf("key click\n");
-}
-
-void beep()
-{
-	printf("beep\n");
-	// ring system bell with "BELL" character
-	// printf("\a");
-}
-
-//void keydown(char* name);
-//void keyup(char* name);
 
 //tables:
 const char* keynames[]={

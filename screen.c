@@ -13,15 +13,37 @@ Z100* z100;
 
 //void renderScreen(Video*, unsigned int*);
 
-const int X_SCALE = 1;
-const int Y_SCALE = 2;
-
+#ifdef RPI
+const float X_SCALE = 0.75;
+const float Y_SCALE = 1.50;
+#endif
+#ifndef RPI
+const float X_SCALE = 1;
+const float Y_SCALE = 2;
+#endif
 GtkWidget *window;
 GtkWidget *drawingArea;
 
 // gtk function to draw in gtk window
 void display() {
   gtk_widget_queue_draw(window);
+}
+
+void windowactive()
+{
+	GdkWindow* w=gtk_widget_get_window(window);
+	gdk_window_show(w);
+	gdk_window_focus(w,0);
+//	w->gtk_window_present_with_time();
+#ifdef RPI
+	gtk_window_fullscreen(GTK_WINDOW(window));
+#endif
+}
+
+void windowinactive()
+{
+	GdkWindow* w=gtk_widget_get_window(window);
+	gdk_window_hide(w);
 }
 
 static gboolean on_keypress(GtkWidget* widget, GdkEventKey* event) {
@@ -33,7 +55,7 @@ static gboolean on_keypress(GtkWidget* widget, GdkEventKey* event) {
     from the user machine. What gets used here is the event->keyval instance
     variable of the GdkEventKey object.
     "keyval" is either one of two things - an ascii character or a keycode */
-  printf("*key pressed* GdkEventKey Code: %x\n", event->keyval);
+  printf("*screen: key pressed* GdkEventKey Code: %x\n", event->keyval);
 
   //handle CONTROL key press
   if(event->keyval == 0xffe3)
@@ -135,6 +157,9 @@ else if (event->keyval == 0xffc9) {
   else if(event->keyval == 0xff13) {
     code = (char)0xaa;
   }
+  else if(event->keyval == 0xff57) {
+	togglePause();
+  }
   // handle keypad '-' '.' key press
   else if(event->keyval == 0xffad || event->keyval == 0xffae ||
     (event->keyval >= 0xffb0 && event->keyval <= 0xffb9)) {
@@ -162,6 +187,73 @@ static gboolean on_draw_event(GtkWidget* widget, cairo_t *cairo_obj) {
   renderScreen(z100->video,pixels);
   // now, cycle through the pixel array as if reading rows/columns
   // loop through rows
+
+if(X_SCALE!=(int)X_SCALE || Y_SCALE!=(int)Y_SCALE)
+{
+//https://stackoverflow.com/questions/9570895/image-downscaling-algorithm
+int xwidth=(int)(X_SCALE*640);
+int ywidth=(int)(Y_SCALE*225);
+double yend=0.0;
+
+  for(int row = 0; row < ywidth; row++) {
+	double ystart=yend;
+	yend=(row+1)/Y_SCALE;
+	if(yend>=225)
+		yend=225-.0001;
+	double xend=0.0;
+
+    // loop through columns
+    for(int column = 0; column < xwidth; column++) {
+	double xstart=xend;
+	xend=(column+1)/X_SCALE;
+	if(xend>=640)
+		xend=640-.0001;
+	double ravg=0.0,gavg=0.0,bavg=0.0;
+	for(int y=(int)ystart; y<=(int)yend; ++y)
+	{
+		double yportion=1.0;
+		if(y==(int)ystart)
+			yportion-=ystart-y;
+		if(y==(int)yend)
+			yportion-=y+1-yend;
+		for(int x=(int)xstart; x<=(int)xend; ++x)
+		{
+			double xportion=1.0;
+			if(x==(int)xstart) xportion-=xstart-x;
+			if(x==(int)xend) xportion-=x+1-xend;
+
+      // get 24-bit colour from pixel array element
+      p24BitColor = pixels[(y*640) + x];
+      // extract each color component from the 24-bit color
+      red_val = (p24BitColor>>16)&0xff;
+      green_val = (p24BitColor>>8)&0xff;
+      blue_val = p24BitColor&0xff;
+	ravg+=red_val*yportion*xportion;
+	gavg+=green_val*yportion*xportion;
+	bavg+=blue_val*yportion*xportion;
+		}
+	}
+	ravg=ravg/(X_SCALE*Y_SCALE);
+	gavg=gavg/(X_SCALE*Y_SCALE);
+	bavg=bavg/(X_SCALE*Y_SCALE);
+	if(ravg>=256.0)ravg=255.0;
+	if(gavg>=256.0){gavg=255.0; printf("Oops g=%f\n",gavg); }
+	if(bavg>=256.0)bavg=255.0;
+	red_val=(int)ravg;
+	green_val=(int)gavg;
+	blue_val=(int)bavg;
+      // source RGB data to cairo rectangle
+      cairo_set_source_rgb(cairo_obj, red_val, green_val, blue_val);
+      // make rectangle (obj, x-coor of left side, y-coor of top, width, height)
+      cairo_rectangle(cairo_obj, column, row, 1, 1);
+      // color rectangle
+      cairo_fill(cairo_obj);
+    }
+  }
+}
+else
+{
+
   for(int row = 0; row < 225; row++) {
     // loop through columns
     for(int column = 0; column < 640; column++) {
@@ -174,11 +266,16 @@ static gboolean on_draw_event(GtkWidget* widget, cairo_t *cairo_obj) {
       // source RGB data to cairo rectangle
       cairo_set_source_rgb(cairo_obj, red_val, green_val, blue_val);
       // make rectangle (obj, x-coor of left side, y-coor of top, width, height)
-      cairo_rectangle(cairo_obj, column*X_SCALE, row*Y_SCALE, X_SCALE, Y_SCALE);
+      int xsize=(int)X_SCALE;
+      if (xsize<1) xsize=1;
+      int ysize=(int)Y_SCALE;
+      if (ysize<1) ysize=1;
+      cairo_rectangle(cairo_obj, (int)(column*X_SCALE), (int)(row*Y_SCALE), xsize, ysize);
       // color rectangle
       cairo_fill(cairo_obj);
     }
   }
+}
   return FALSE;
 }
 
@@ -192,7 +289,11 @@ void screenInit(int* argc, char** argv[]) {
   gtk_container_add(GTK_CONTAINER(window), drawingArea);
 
   gtk_window_set_title(GTK_WINDOW(window), "Z-100 Screen");
-  gtk_window_set_default_size(GTK_WINDOW(window), 640*X_SCALE, 225*Y_SCALE);
+  gtk_window_set_default_size(GTK_WINDOW(window), (int)(640*X_SCALE), (int)(225*Y_SCALE));
+
+#ifdef RPI
+  gtk_window_fullscreen(GTK_WINDOW(window));
+#endif
 
   // connect callback functions to GTK window and drawing area default operations
   /* i.e. - when gtk_widget_queue_draw() is called via the display() function called

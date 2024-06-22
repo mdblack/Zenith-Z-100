@@ -32,6 +32,11 @@
 #include "name.h"
 #include "debug.h"
 
+#ifdef RPI
+#include<pigpio.h>
+#endif
+
+
 // floppy a and b file names
 char* image_name_a=NULL;
 char* image_name_b=NULL;
@@ -39,12 +44,48 @@ char* image_name_b=NULL;
 FILE* printer_in=NULL;
 FILE* printer_out=NULL;
 
+//cpm addons
+#define SECTOR_SIZE 128
+#define SECTORS_PER_TRACK 26
+unsigned int sector,track,sector_ram_low,sector_ram_high,drive,sector_count;
+
+unsigned char* disk;
+unsigned char* diskb;
+unsigned int disksize=0,disksizeb=0;
+
 pthread_t emulator_thread;      // this thread object runs the main emulator thread
 volatile sig_atomic_t pauseSimulation;	// allows user to debug and single-step
 
 unsigned int* pixels;   // holds the state of each pixel on the screen
 
 Z100* z100object;
+
+void initcpmdisks(Z100* c)
+{
+       FILE* cpmdisk=fopen(image_name_a,"rb");
+        if(cpmdisk==NULL)
+        {
+                printf("can't find %s\n",image_name_a);
+                return;
+        }
+        fseek(cpmdisk,0,SEEK_END);
+        disksize=ftell(cpmdisk);
+        rewind(cpmdisk);
+        disk=(unsigned char*)malloc(sizeof(unsigned char)*disksize);
+        fread(disk,1,disksize,cpmdisk);
+        fclose(cpmdisk);
+
+        cpmdisk=fopen(image_name_b,"rb");
+        if(cpmdisk!=NULL)
+        {
+                fseek(cpmdisk,0,SEEK_END);
+                disksizeb=ftell(cpmdisk);
+                rewind(cpmdisk);
+                diskb=(unsigned char*)malloc(sizeof(unsigned char)*disksizeb);
+                fread(diskb,1,disksizeb,cpmdisk);
+                fclose(cpmdisk);
+        }
+}
 
 Z100* newComputer()
 {
@@ -84,21 +125,25 @@ Z100* newComputer()
 	e8253_set_out_fct(computer->e8253, 2, NULL, timer_out_2);
 
 	//set up floppy controller
-	computer->jwd1797 = newJWD1797(computer->e8259_secondary);
+	computer->jwd1797 = newJWD1797(computer->e8259_secondary,computer);
 
 	// this will be the S101 Switch - selects functions to be run during start-up
 	// and master reset. (Page 2.8 in Z100 technical manual for pin defs)
 
-	//this setting boots automatically
-//	computer->switch_s101_FF = 0b00001000;
 	//this setting starts at the hand prompt
 	computer->switch_s101_FF = 0b00000000;
+	//this setting boots automatically
+	if(AUTOBOOT==1)
+		computer->switch_s101_FF = 0b00001000;
 	// processor swap ports
 	computer->processor_swap_port_FE = 0b00000000;
 	// memory control latch
 	computer->memory_control_latch_FC = 0b00000000;
 	// io_diag_port
 	computer->io_diag_port_F6 = 0b11111111;
+
+	for(unsigned int addr=0; addr < RAM_SIZE; addr++)
+		computer->ram[addr]=0;
 
 	return computer;
 }
@@ -111,6 +156,8 @@ void reset(Z100* computer)
 
 	// load initial disk file in reset function
 	resetJWD1797(computer->jwd1797);
+
+	resetVideo(computer->video,pixels);
 
 	//set the counters
 	computer->instructions_done = 0;
@@ -129,6 +176,7 @@ void reset(Z100* computer)
 
 	//temp set ROM romOption to 0 - make the ROM appear to be repeated throughout memory
 	computer->romOption=0;
+//	computer->romOption=1;
 	//setting killParity to 0 here actually enables the parity checking circuitry
 	//setting this to 1 is saying "yes, kill (disable) the parity che>
 	//in the actual hardware, bit 5 of the memory control port would be set t>
@@ -138,14 +186,44 @@ void reset(Z100* computer)
 	computer->zeroParity = 0;
 	// this holds the result of calculating a byte parity
 	computer->byteParity = 0;
+
+
+	e8259_reset(computer->e8259_master);
+	e8259_reset(computer->e8259_secondary);
+	//this setting starts at the hand prompt
+	computer->switch_s101_FF = 0b00000000;
+	if(AUTOBOOT==1)
+	//this setting boots automatically
+		computer->switch_s101_FF = 0b00001000;
+
+	// processor swap ports
+	computer->processor_swap_port_FE = 0b00000000;
+	// memory control latch
+	computer->memory_control_latch_FC = 0b00000000;
+	// io_diag_port
+	computer->io_diag_port_F6 = 0b11111111;
 }
 
 void z100singleinstruction(Z100* computer)
 {
+/*if(computer->p8085.PC==0x3c)
+{
+        for(unsigned int i=0x80; i<0x400; i++)
+        {
+                z100_memory_write(i,0,computer);
+        }
+        for(unsigned int i=0x480; i<=0xffff; i++)
+        {
+                z100_memory_write(i,0,computer);
+        }
+printf("Cleared all memory\r\n");
+exit(0);
+}
+*/
 	//is there a keyboard trap requested?
-	if(computer->keyboard->requestInterrupt==1)
+	if(computer->keyboard->requestInterrupt==1 && computer->active_processor==PR8088)
 	{
-		printf("keyboard interrupt request received, calling trap\n");
+//		printf("keyboard interrupt request received, calling trap\n");
 		computer->keyboard->requestInterrupt=0;
 		if(computer->p8088->CS!=0xfc01)
 			trap(computer->p8088,6+64,1);
@@ -188,6 +266,7 @@ void z100singleinstruction(Z100* computer)
 //main emulation loop: run the processors
 void z100mainloop(Z100* computer)
 {
+
 	printf("Start running processors\n\n");
 
 	//run the processors forever
@@ -205,6 +284,7 @@ void handle8088InstructionCycle(Z100* c)
 {
 	c->p8088->ready_x86_ = c->jwd1797->drq;
 	doInstruction8088(c->p8088);
+
 	if(c->p8088->wait_state_x86==0)
 	{
 		c->instructions_done++;
@@ -458,6 +538,22 @@ void z100_memory_must_write(unsigned int addr, unsigned char data, Z100* c)
 		z100_memory_write(addr,data,c);
 }
 
+int receive_ready(Z100* c)
+{
+	if(!keyboardStatusRead(c->keyboard))
+		return 0;
+	return 1;
+}
+
+unsigned char receive(Z100* c)
+{
+	while(!keyboardStatusRead(c->keyboard))
+	{
+		if(pauseSimulation==1) return 0;
+	}
+	return keyboardDataRead(c->keyboard)&0x7f;
+}
+
 unsigned int z100_port_read(unsigned int address, Z100* c)
 {
 	unsigned char return_value;
@@ -466,6 +562,21 @@ unsigned int z100_port_read(unsigned int address, Z100* c)
 	// read port based on incoming port address
 	switch(address)
 	{
+
+		//cpm emulator ports
+                case 2:
+                        return receive(c);
+                //read status
+                case 3:
+                        if(receive_ready(c))
+                                return 1;
+                        else
+                                return 0;
+                //disk status
+                case 0xf:
+                        return 0xff;
+
+
 		//ports AA-AF are for the Winchester hard drive
 		//this isn't implemented so we return dummy values
 
@@ -669,9 +780,111 @@ unsigned int z100_port_read(unsigned int address, Z100* c)
 
 void z100_port_write(unsigned int address, unsigned char data, Z100* c)
 {
-	// printf("Value %X written to port at address %X\n", data, address);
 	switch(address) 
 	{
+		//2-f cpm emulator ports
+
+
+		case 2:
+	                printf("%c",data);
+//			videoSetChar(c->video,0,0,data);
+			videoWrite(c->video,data);
+			display();
+			break;
+               //disk handler
+                case 0x9:
+                        //addr_low
+                        sector_ram_low=data;
+                        break;
+                case 0xa:
+                        //addr_high
+                        sector_ram_high=data;
+                        break;
+                case 0xb:
+                        //sector is 128 bytes
+                        sector_count=data;
+                        break;
+                //track
+                case 0xc:
+                        track=data;
+                        break;
+                //sector
+                case 0xd:
+                        sector=data;
+                        break;
+                case 0xe:
+                        drive=data;
+                case 0xf:
+                        //0x20 is read disk
+                        //0x30 is write disk
+                        sector_count=1;
+                        if(data==0x20)
+                        {
+                                unsigned int rawsector = sector+track*SECTORS_PER_TRACK-1;
+                                unsigned int addr=(sector_ram_high<<8)|sector_ram_low;
+                                if(drive==0)
+                                {
+                                        for(int i=0; i<SECTOR_SIZE*sector_count; i=i+1)
+                                        {
+                                                if(rawsector*SECTOR_SIZE+i<disksize && addr+i<65536)
+						{
+							z100_memory_write(addr+i,disk[rawsector*SECTOR_SIZE+i],c);
+//							printf("reading from cpm: %x, writing in memory %x: %x\n",
+//								disk[rawsector*SECTOR_SIZE+i],
+//								addr+i,
+//								z100_memory_read(addr+i,c));
+						}
+                                        }
+                                }
+                                else if(drive==1 && disksizeb>0)
+                                {
+                                        for(int i=0; i<SECTOR_SIZE*sector_count; i=i+1)
+                                        {
+                                                if(rawsector*SECTOR_SIZE+i<disksizeb && addr+i<65536)
+							z100_memory_write(addr+i,diskb[rawsector*SECTOR_SIZE+i],c);
+                                        }
+                                }
+                        }
+                       else if(data==0x30)
+                        {
+                                unsigned int rawsector = sector+track*SECTORS_PER_TRACK-1;
+                                unsigned int addr=(sector_ram_high<<8)|sector_ram_low;
+                                for(int i=0; i<SECTOR_SIZE*sector_count; i=i+1)
+                                {
+                                        if(drive==0)
+                                        {
+                                                if(rawsector*SECTOR_SIZE+i<disksize && addr+i<65536)
+                                                {
+                                                        disk[rawsector*SECTOR_SIZE+i]=z100_memory_read(addr+i,c);
+						}
+                                        }
+                                        else if (drive==1 && disksizeb>0)
+                                        {
+                                                if(rawsector*SECTOR_SIZE+i<disksizeb && addr+i<65536)
+                                                {
+                                                        diskb[rawsector*SECTOR_SIZE+i]=z100_memory_read(addr+i,c);
+                                                }
+                                        }
+                                }
+				if(drive==0 && image_name_a[0]!='_')
+				{
+						FILE* cpmdisk=fopen(image_name_a,"wb");
+						for(int i=0; i<disksize; i++)
+							fprintf(cpmdisk,"%c",disk[i]);
+						fclose(cpmdisk);
+				}
+				if(drive==1 && image_name_b[0]!='_')
+				{
+						FILE* cpmdisk=fopen(image_name_b,"wb");
+						for(int i=0; i<disksize; i++)
+							fprintf(cpmdisk,"%c",disk[i]);
+						fclose(cpmdisk);
+				}
+                        }
+                        break;
+
+
+
 		//No winchester drive present
 		case 0xAA:
 		case 0xAB:
@@ -707,26 +920,32 @@ void z100_port_write(unsigned int address, unsigned char data, Z100* c)
 
 		// Video Commands - 68A21 parallel port
 		case 0xD8:
+printf("d8 write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// Video Command Control - 68A21 parallel port
 		case 0xD9:
+printf("d9 write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// Video RAM Mapping Module Data - 68A21 parallel port
 		case 0xDA:
+printf("da write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// Video RAM Mapping Module Control - 68A21 parallel port
 		case 0xDB:
+printf("db write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// CRT Controller 68A45 Register Select port 0xDC
 		case 0xDC:
+printf("dc write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// CRT Controller 68A45 Register Value port 0xDD
 		case 0xDD:
+printf("dd write %x\n",data);
 			writeVideo(c->video, address, data&0xff);
 			break;
 		// parallel port (68A21 - Peripheral Interface Adapter (PIA))
@@ -911,6 +1130,11 @@ int getParity(unsigned int data)
 void loadrom(Z100* c, char* fname)
 {
 	FILE* f = fopen(fname,"rb");
+	if(f==NULL)
+	{
+		printf("Can't find BIOS ROM image %s\n",fname);
+		exit(0);
+	}
 	for(int i = 0; i < ROM_SIZE; i++) 
 	{
 		c->rom[i] = fgetc(f);
@@ -919,10 +1143,10 @@ void loadrom(Z100* c, char* fname)
 }
 
 //invoked when ctrl-c pressed at console
-void onCtrlC(int)
+void onCtrlC(int c)
 {
 	pauseS();
-	debug_start(z100object);
+//	debug_start(z100object);
 
 	struct sigaction act;
 	act.sa_handler=onCtrlC;
@@ -932,11 +1156,76 @@ void onCtrlC(int)
 void pauseS()
 {
 	pauseSimulation=1;
+	debug_start(z100object);
+	printf("PAUSED\n");
 }
 void unpause()
 {
 	pauseSimulation=0;
+	printf("UNPAUSED\n");
 }
+void togglePause()
+{
+	if(pauseSimulation==0)
+		pauseS();
+	else
+		unpause();
+}
+int getpause()
+{
+	return pauseSimulation;
+}
+
+void setLED(int LED, int state)
+{
+#ifdef RPI
+	if(state==1)
+		gpioWrite(LED,PI_HIGH);
+	else if(state==0)
+		gpioWrite(LED,PI_LOW);
+#endif
+}
+
+void beep(int ms)
+{
+#ifdef RPI
+	for(int i=0; i<ms; i++)
+	{
+		gpioWrite(SPEAKER,PI_HIGH);
+		time_sleep(0.001/2.0);
+		gpioWrite(SPEAKER,PI_LOW);
+		time_sleep(0.001/2.0);
+	}
+#endif
+}
+
+void stepclick()
+{
+#ifdef RPI
+	for(int i=0; i<1; i++)
+	{
+		gpioWrite(SPEAKER,PI_HIGH);
+		time_sleep(0.02);
+		gpioWrite(SPEAKER,PI_LOW);
+		time_sleep(0.02);
+	}
+#endif
+}
+
+void initGPIO()
+{
+#ifdef RPI
+	gpioInitialise();
+	gpioSetMode(LED_DRIVE_A,PI_OUTPUT);
+	gpioSetMode(LED_DRIVE_B,PI_OUTPUT);
+	gpioWrite(LED_DRIVE_A,PI_LOW);
+	gpioWrite(LED_DRIVE_B,PI_LOW);
+	gpioSetMode(SPEAKER,PI_OUTPUT);
+	gpioWrite(SPEAKER,PI_LOW);
+#endif
+}
+
+
 
 void z100_main()
 {
@@ -949,11 +1238,21 @@ void z100_main()
 	//pass the Z100 object to the screen
 	screenSetComputer(z100);
 
+	initcpmdisks(z100);
+
 	//reset all components
 	reset(z100);
 
-	//start unpaused
-	pauseSimulation=0;
+//uncomment to bypass the rom for cpm
+//z100_port_write(0xfe,0xff,z100);
+//z100_port_write(0xfc,0x04,z100);
+//z100->p8088->CS=0;
+//z100->p8088->IP=0x400;
+//prefetch_flush(z100->p8088);
+//z100->p8085.PC=0x3c;
+
+//for(int i=0; i<128; i++)
+//	z100->ram[i+0x400]=disk[i];
 
 	//and go!
 	z100mainloop(z100);
@@ -972,6 +1271,8 @@ int main(int argc, char* argv[]) {
 
 	//if no command line arguments, use IMAGE_NAME as the disk image
 	//otherwise use 1 or 2 arguments as disks A and B
+	image_name_a=IMAGE_NAME;
+	image_name_b="empty.img";
 	if(argc>1)
 	{
 		image_name_a=argv[1];
@@ -979,8 +1280,8 @@ int main(int argc, char* argv[]) {
 		if(argc>2)
 			image_name_b=argv[2];
 	}
-	else
-		image_name_a=IMAGE_NAME;
+
+	initGPIO();
 
 	//contributed by porkypiggy64: this enables ctrl-c to pause the simulation
 	struct sigaction act;
@@ -990,7 +1291,7 @@ int main(int argc, char* argv[]) {
 	printf("\n\n%s\n\n",
 		" ===========================================\n"
 		" |\tZENITH Z-100 EMULATOR\t\t   |\n"
-		" |\tby: Joe Matta, Margaret Black\t   |\n"
+		" |\tby: Margaret Black, Joe Matta\t   |\n"
 		" |\t8/2020 - 5/2024\t\t\t   |\n"
 		" ===========================================\n");
 

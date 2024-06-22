@@ -15,8 +15,12 @@
  * Public License for more details.                                          *
  *****************************************************************************/
 
+//#define RPI 1
+
+#define AUTOBOOT 0
+
 #define ROM_SIZE 0x4000
-#define RAM_SIZE 0x30000
+#define RAM_SIZE 0x30000*2
 
 // (20 cycles = 4 microseconds, EDIT - 8253 timer is connected to a 250kHz
 //        clock according to page 2.80 Z-100 Technical manual (hardware) - clocked
@@ -26,6 +30,10 @@
 //        along with the display refresh rate
 //        (page 4.46 Z-100 Technical manual (hardware))
 #define VSYNC_TIMER_CYCLE_LIMIT 83333
+
+#define LED_DRIVE_A 21
+#define LED_DRIVE_B 20
+#define SPEAKER 26
 
 #include "8085.h"
 #include "8088.h"
@@ -108,3 +116,9 @@ int pr8085_FD1797WaitStateCondition(unsigned char opCode, unsigned char port_num
 void z100singleinstruction(Z100*);
 void pauseS();
 void unpause();
+void togglePause();
+int getpause();
+void setLED(int LED, int state);
+void beep(int ms);
+void stepclick();
+void initcpmdisks(Z100*);

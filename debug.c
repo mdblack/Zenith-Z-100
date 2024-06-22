@@ -18,6 +18,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <dirent.h>
 
 #include "mainboard.h"
 #include "debug.h"
@@ -308,17 +312,38 @@ void hexdump(Z100* c, unsigned int address)
 }
 
 //read a line from console
-char* inputLine(void)
+void inputLine(char* retline)
+//char* inputLine(void)
 {
-	char* retline=NULL;
+//	char* retline=NULL;
 	int i=0;
 	int c;
 	while(1)
 	{
+		c=0;
+		char buf[2];
+//		fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
+//		fread(buf,1,1,stdin);
+//		fcntl(0, F_SETFL, fcntl(0, F_GETFL) & ~O_NONBLOCK);
+//		c=buf[0];
 		c=fgetc(stdin);
+//		c=fgetc(fd);
+		if(getpause()==0)
+		{
+			retline[0]='g';
+			retline[1]=0;
+			return;
+		}
+		if(c=='g')
+		{
+			retline[0]='g';
+			retline[1]=0;
+			return;
+		}
+		if(c==0) continue;
 		if(c==EOF || c=='\n' || c=='\r')
 			break;
-		retline=(char*)realloc(retline, i+1);
+//		retline=(char*)realloc(retline, i+1);
 		if(c>='A' && c<='Z')
 			c+=('a'-'A');
 		retline[i]=(char)c;
@@ -326,10 +351,10 @@ char* inputLine(void)
 	}
 	if(c=='\n' || c=='\r' || i>0)
 	{
-		retline=(char*)realloc(retline,i+1);
+//		retline=(char*)realloc(retline,i+1);
 		retline[i]='\0';
 	}
-	return retline;
+//	return retline;
 }
 
 void print8085Regs(Z100* c)
@@ -534,6 +559,114 @@ void debug_start(Z100* c)
 {
 	lastaddress=(c->p8088->CS<<4)+(c->p8088->IP);
 }
+
+void dofile(Z100* c, char* line)
+{
+	char drive=line[1];
+	if(drive=='l')
+	{
+		DIR* dir=opendir(".");
+		struct dirent* direntry;
+		while(direntry=readdir(dir))
+		{
+			char* fname=direntry->d_name;
+			if(strlen(fname)>4)
+			{
+				int l=strlen(fname);
+				if(fname[l-4]=='.' && fname[l-3]=='i' && fname[l-2]=='m' && fname[l-1]=='g')
+				{
+					printf("%s\n",fname);
+				}
+				if(fname[l-4]=='.' && fname[l-3]=='c' && fname[l-2]=='p' && fname[l-1]=='m')
+				{
+					printf("%s\n",fname);
+				}
+			}
+		}
+		return;
+	}
+	else if (drive!='a' && drive!='b')
+		return;
+	line=line+2;
+	if(line[0]==' ') line++;
+
+	char name[100];
+	char name2[100];
+
+	int i=0;
+	for(i=0; line[i]!='\0'; i++)
+	{
+		name[i]=line[i];
+		name2[i]=line[i];
+	}
+	int j=i;
+	name[i++]='.';
+	name[i++]='i';
+	name[i++]='m';
+	name[i++]='g';
+	name[i++]='\0';
+	name2[j++]='.';
+	name2[j++]='c';
+	name2[j++]='p';
+	name2[j++]='m';
+	name2[j++]='\0';
+
+	int match=0;
+
+	DIR* dir=opendir(".");
+	struct dirent* direntry;
+	while(direntry=readdir(dir))
+	{
+		char* fname=direntry->d_name;
+		if(strlen(fname)>4)
+		{
+			int l=strlen(fname);
+			if(fname[l-4]=='.' && fname[l-3]=='i' && fname[l-2]=='m' && fname[l-1]=='g')
+			{
+				printf("match? %s %s\n",name,fname);
+				if(strcmp(name,fname)==0)
+				{
+					match=1;
+					printf("match: %s %s\n",name,fname);
+				}
+			}
+			if(fname[l-4]=='.' && fname[l-3]=='c' && fname[l-2]=='p' && fname[l-1]=='m')
+			{
+				if(strcmp(name2,fname)==0)
+				{
+					match=2;
+				}
+			}
+		}
+	}
+	if(match==0) return;
+	printf("Loading %s into drive %c\n",name,drive);
+	if(drive=='a')
+	{
+		image_name_a=(char*)malloc(100);
+		if(match==1)
+			strcpy(image_name_a,name);
+		else
+			strcpy(image_name_a,name2);
+	}
+	else
+	{
+		image_name_b=(char*)malloc(100);
+		if(match==1)
+			strcpy(image_name_b,name);
+		else
+			strcpy(image_name_b,name2);
+	}
+	if(match==1)
+		reloadDisk(c->jwd1797);
+	else
+	{
+		initcpmdisks(c);
+		reset(c);
+	}
+	printf("\n");
+}
+
 void handleCommand(char* line, Z100* c)
 {
 	if(line[0]=='t')
@@ -568,6 +701,14 @@ void handleCommand(char* line, Z100* c)
 		if(line[1]!='\0')
 			address=parseAddress(line+1);
 		hexdump(c,address);
+	}
+	else if (line[0]=='m')
+	{
+		FILE* dump=fopen("memorydump.txt","w");
+		unsigned int address=0;
+		for(unsigned int i=0; i<=0xffff; i++)
+			fprintf(dump,"%x %x\n",i,z100_memory_read(i,c));
+		fclose(dump);
 	}
 	else if (line[0]=='e')
 	{
@@ -696,21 +837,7 @@ void handleCommand(char* line, Z100* c)
 	}
 	else if(line[0]=='f')
 	{
-		printf("\nImage file name: ");
-		char name[100];
-		scanf("%s",name);
-		if(line[1]=='a')
-		{
-			image_name_a=(char*)malloc(100);
-			strcpy(image_name_a,name);
-		}
-		else
-		{
-			image_name_b=(char*)malloc(100);
-			strcpy(image_name_b,name);
-		}
-		reloadDisk(c->jwd1797);
-		printf("\n");
+		dofile(c,line);
 	}
 	else if(line[0]=='p')
 	{
@@ -726,7 +853,7 @@ void handleCommand(char* line, Z100* c)
 			printer_out=fopen(fname,"wb");
 		}
 	}
-	if(line[0]=='s')
+	else if(line[0]=='s')
 	{
 		if(line[1]==' ')
 		{
@@ -746,6 +873,10 @@ void handleCommand(char* line, Z100* c)
 			}
 		}
 	}
+	else if(line[0]=='0')
+	{
+		reset(c);
+	}
 
 	else if (line[0]=='h' || line[0]=='?')
 	{
@@ -758,6 +889,7 @@ void handleCommand(char* line, Z100* c)
 		printf("F[A|B] = set floppy A/B image file\n");
 		printf("G = resume running\n");
 		printf("I xx = in from port xx\n");
+		printf("M = dump 64k of memory\n");
 		printf("O xx yy = out yy to port xx\n");
 		printf("P[I|O] = set printer input/output file\n");
 		printf("R = print registers\n");
@@ -767,28 +899,33 @@ void handleCommand(char* line, Z100* c)
 		printf("U [xxxxx|xxxx:xxxx] = unassemble from xxxxx\n");
 		printf("! d = trap xx\n");
 		printf("S parameter = set\n");
+		printf("0 = reset computer\n");
 	}
 }
 
+void windowactive();
+void windowinactive();
+
 void handleDebug(Z100* c)
 {
+	windowinactive();
 	printf("instructions completed: %ld\n",c->instructions_done);
 	printf("simulated time (us): %f\n",c->total_time_elapsed);
 
 	printRegs(c);
 
 	printf(">");
-	char* line = inputLine();
+	char line[100];
+	inputLine(line);
 	while(line[0] != 'g')
 	{
 		if(line[0]!='\0')
 		{
 			handleCommand(line,c);
 		}
-		free(line);
 		printf(">");
-		line=inputLine();
+		inputLine(line);
 	}
-	free(line);
 	unpause();
+	windowactive();
 }

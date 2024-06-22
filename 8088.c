@@ -605,7 +605,6 @@ void check_wait_state_x86(P8088* p8088) {
 
 void doInstruction8088(P8088* p8088)
 {
-
 	check_wait_state_x86(p8088);
 	if(p8088->wait_state_x86)
 	{
@@ -2058,6 +2057,7 @@ void doInstruction8088(P8088* p8088)
 
 		//add,or,adc,sbb,and,sub,xor,cmp r/m8, imm8
 		case 0x80:
+		case 0x82:		//really?
 			decode_ea(p8088);
 			value1=decode_rm_8(p8088);
 			value2=fetch_x86(p8088);
@@ -4336,7 +4336,7 @@ void doInstruction8088(P8088* p8088)
 
 		default:
 			undefined_instruction(p8088,opcode);
-			exit(0);
+			printf("address CS=%x, IP=%x",p8088->CS,p8088->IP);
 	}
 	p8088->operand1=value1;
 	p8088->operand2=value2;
